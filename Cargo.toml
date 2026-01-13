@@ -1,0 +1,10 @@
+[package]
+name = "compare_icon_fonts"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+skrifa = "0.35.0"
+# sleipnir = "0.2.13"
+sleipnir = { path = "../sleipnir" }
+tiny-skia = "0.11.4"
