@@ -180,7 +180,7 @@ fn main() -> ExitCode {
     test_icons.sort_by_cached_key(|i| i.names.join(","));
 
     println!(
-        "Testing {} icons at {} locations at {upem}x{upem}...",
+        "Testing {} icons at {} locations...",
         test_icons.len(),
         test_locs.len()
     );
@@ -201,7 +201,7 @@ fn main() -> ExitCode {
                     pngs.push(
                         text2png(
                             icon.names[0].as_str(),
-                            64.0,
+                            128.0,
                             1.0,
                             raw_font,
                             Color::BLACK,
@@ -215,18 +215,19 @@ fn main() -> ExitCode {
                     unreachable!("Huh?");
                 };
                 if left_png != right_png {
-                    save_png(
-                        icon.names[0].as_str(),
-                        "fail.left",
-                        &left_png,
-                        bad_locs.len(),
-                    );
-                    save_png(
-                        icon.names[0].as_str(),
-                        "fail.right",
-                        &right_png,
-                        bad_locs.len(),
-                    );
+                    // I ran out of disk space, lets disable this for now
+                    // save_png(
+                    //     icon.names[0].as_str(),
+                    //     "fail.left",
+                    //     &left_png,
+                    //     bad_locs.len(),
+                    // );
+                    // save_png(
+                    //     icon.names[0].as_str(),
+                    //     "fail.right",
+                    //     &right_png,
+                    //     bad_locs.len(),
+                    // );
                     bad_locs.push(loc);
                 } else {
                     //save_png(icon.names[0].as_str(), "pass", &left_png, good_locs.len());
