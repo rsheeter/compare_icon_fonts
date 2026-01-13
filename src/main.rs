@@ -1,12 +1,14 @@
 use std::{collections::HashSet, fs, process::ExitCode};
 
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use clap::Parser;
+use regex::Regex;
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag, instance::Location, raw::TableProvider};
 use sleipnir::{
-    iconid::{Icon, Icons},
-    text2png::text2png,
+    draw_glyph::DrawOptions,
+    icon2svg::draw_icon,
+    iconid::{Icon, IconIdentifier, Icons},
+    pathstyle::SvgPathStyle,
 };
-use tiny_skia::Color;
 
 fn print_problems(desc: &str, offenders: &[Icon]) {
     for offender in offenders {
@@ -111,25 +113,62 @@ fn constellation(font: &FontRef<'_>) -> HashSet<Location> {
         .collect()
 }
 
-fn save_png(icon_name: &str, part: &str, content: &[u8], nth: usize) {
-    let path = format!("/tmp/compare.{icon_name}.{part}.{nth}.png");
-    fs::write(&path, content).unwrap_or_else(|e| panic!("Unable to write {path}: {e}"));
+fn save_failure(icon_name: &str, side: &str, content: &str, nth: usize) {
+    // reformat the svg slightly
+    let content = content
+        .replace("<path", "\n  <path")
+        .replace("</svg>", "\n</svg>");
+
+    let preamble = "<path d=\"";
+    let idx = content.find(preamble).unwrap() + preamble.len();
+    let (preamble, rest) = content.split_at(idx);
+    let idx = rest.find("\"").unwrap();
+    let (path, suffix) = rest.split_at(idx);
+
+    let mut formatted = preamble.to_string() + "\n";
+
+    let cmd_indices = path.chars().enumerate().filter_map(|(i, c)| if c.is_alphabetic() {
+        Some(i)
+    } else {
+        None
+    }).collect::<Vec<_>>();
+    for cmd in  cmd_indices.windows(2).map(|w| &path[w[0]..w[1]]) {
+        formatted += cmd;
+        formatted += "\n";
+    }
+
+    formatted += suffix;
+
+    let path = format!("/tmp/failure.{icon_name}.{side}.{nth}.svg");
+    fs::write(&path, formatted).unwrap_or_else(|e| panic!("Unable to write {path}: {e}"));
+}
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Regex filter for icon names
+    #[arg(short, long, default_value = None)]
+    filter: Option<String>,
+
+    /// Number of times to greet
+    #[arg(num_args = 2)]
+    paths: Vec<String>,
 }
 
 fn main() -> ExitCode {
-    let paths = std::env::args().skip(1).collect::<Vec<_>>();
-    if paths.len() != 2 {
+    let args = Args::parse();
+    if args.paths.len() != 2 {
         println!("Pass the two font files in");
         return ExitCode::FAILURE;
     }
 
     let mut raws = Vec::new();
-    for path in paths.iter() {
+    for path in args.paths.iter() {
         raws.push(fs::read(path).unwrap_or_else(|e| panic!("Unable to read {}: {e}", path)));
     }
 
     let mut refs = Vec::new();
-    for (raw, path) in raws.iter().zip(paths.iter()) {
+    for (raw, path) in raws.iter().zip(args.paths.iter()) {
         refs.push(
             FontRef::new(raw)
                 .unwrap_or_else(|e| panic!("Unable to create font ref to {}: {e}", path)),
@@ -142,13 +181,23 @@ fn main() -> ExitCode {
         .max()
         .unwrap();
 
+    let filter = args
+        .filter
+        .map(|raw| Regex::new(&raw).unwrap_or_else(|e| panic!("Invalid filter: {e}")));
+
     let mut icons = Vec::new();
-    for (font_ref, path) in refs.iter().zip(paths.iter()) {
+    for (font_ref, path) in refs.iter().zip(args.paths.iter()) {
         icons.push(
             font_ref
                 .icons()
                 .unwrap_or_else(|e| panic!("Unable to enumerate icons from {}: {e}", path))
                 .into_iter()
+                .filter(|i| {
+                    let Some(filter) = filter.as_ref() else {
+                        return true;
+                    };
+                    i.names.iter().any(|n| filter.find(n).is_some())
+                })
                 .map(|i| {
                     let mut i = Icon {
                         gid: GlyphId::new(0),
@@ -191,46 +240,33 @@ fn main() -> ExitCode {
     errs += right_icons.print_only("only_right", &left_icons);
 
     errs += test_icons
-        .par_iter()
+        .iter()
         .map(|icon| {
             let mut bad_locs = Vec::new();
             let mut good_locs = Vec::new();
             for loc in test_locs.iter() {
-                let mut pngs = Vec::new();
-                for raw_font in raws.iter() {
-                    pngs.push(
-                        text2png(
-                            icon.names[0].as_str(),
-                            128.0,
-                            1.0,
-                            raw_font,
-                            Color::BLACK,
-                            Color::WHITE,
-                            (*loc).into(),
-                        )
-                        .unwrap_or_else(|e| panic!("Unable to draw {icon:?} at {loc:?}: {e}")),
+                let draw_opts = DrawOptions::new(
+                    IconIdentifier::Name(icon.names[0].as_str().into()),
+                    upem.into(),
+                    (*loc).into(),
+                    SvgPathStyle::Unchanged(0),
+                );
+                let mut svgs = Vec::new();
+                for font_ref in refs.iter() {
+                    svgs.push(
+                        draw_icon(font_ref, &draw_opts)
+                            .unwrap_or_else(|e| panic!("Unable to draw {icon:?} at {loc:?}: {e}")),
                     );
                 }
-                let [left_png, right_png] = pngs.as_slice() else {
-                    unreachable!("Huh?");
+                let [left_svg, right_svg] = svgs.as_slice() else {
+                    unreachable!("??");
                 };
-                if left_png != right_png {
-                    // I ran out of disk space, lets disable this for now
-                    // save_png(
-                    //     icon.names[0].as_str(),
-                    //     "fail.left",
-                    //     &left_png,
-                    //     bad_locs.len(),
-                    // );
-                    // save_png(
-                    //     icon.names[0].as_str(),
-                    //     "fail.right",
-                    //     &right_png,
-                    //     bad_locs.len(),
-                    // );
+                if left_svg != right_svg {
+                    save_failure(icon.names[0].as_str(), "left", &left_svg, bad_locs.len());
+                    save_failure(icon.names[0].as_str(), "right", &right_svg, bad_locs.len());
+
                     bad_locs.push(loc);
                 } else {
-                    //save_png(icon.names[0].as_str(), "pass", &left_png, good_locs.len());
                     good_locs.push(loc);
                 }
             }
