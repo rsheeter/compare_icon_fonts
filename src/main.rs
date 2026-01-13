@@ -1,6 +1,7 @@
 use std::{collections::HashSet, fs, process::ExitCode};
 
 use clap::Parser;
+use kurbo::BezPath;
 use regex::Regex;
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag, instance::Location, raw::TableProvider};
 use sleipnir::{
@@ -113,26 +114,80 @@ fn constellation(font: &FontRef<'_>) -> HashSet<Location> {
         .collect()
 }
 
+fn subpaths(icon_name: &str, path: &str) -> Vec<BezPath> {
+    path.chars()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            if ['m', 'M'].contains(&c) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .windows(2)
+        .map(|w| &path[w[0]..w[1]])
+        .map(|s| {
+            BezPath::from_svg(s).unwrap_or_else(|e| panic!("Invalid path for {icon_name}: {e}"))
+        })
+        .collect()
+}
+
+fn parse_path(svg: &str) -> (&str, &str, &str) {
+    let preamble = "<path d=\"";
+    let idx = svg.find(preamble).unwrap() + preamble.len();
+    let (preamble, rest) = svg.split_at(idx);
+    let idx = rest.find("\"").unwrap();
+    let (path, suffix) = rest.split_at(idx);
+    (preamble, path, suffix)
+}
+
+fn equivalent_paths(icon_name: &str, left_svg: &str, right_svg: &str) -> bool {
+    let left_path = parse_path(left_svg).1;
+    let right_path = parse_path(right_svg).1;
+
+    let left_subpaths = subpaths(icon_name, left_path);
+    let right_subpaths = subpaths(icon_name, right_path);
+
+    if left_subpaths.len() != right_subpaths.len() {
+        return false;
+    }
+
+    left_subpaths
+        .into_iter()
+        .zip(right_subpaths.into_iter())
+        .all(|(left_subpath, right_subpath)| {
+            if left_subpath == right_subpath {
+                return true;
+            }
+            if left_subpath.is_empty() {
+                return false;
+            }
+            // Sometimes one is rotated
+            let left_elements = left_subpath.into_elements();
+            let mut right_elements = right_subpath.into_elements();
+            right_elements.rotate_right(1);
+
+            left_elements == right_elements
+        })
+}
+
 fn save_failure(icon_name: &str, side: &str, content: &str, nth: usize) {
     // reformat the svg slightly
     let content = content
         .replace("<path", "\n  <path")
         .replace("</svg>", "\n</svg>");
 
-    let preamble = "<path d=\"";
-    let idx = content.find(preamble).unwrap() + preamble.len();
-    let (preamble, rest) = content.split_at(idx);
-    let idx = rest.find("\"").unwrap();
-    let (path, suffix) = rest.split_at(idx);
+    let (preamble, svg_path, suffix) = parse_path(&content);
 
     let mut formatted = preamble.to_string() + "\n";
 
-    let cmd_indices = path.chars().enumerate().filter_map(|(i, c)| if c.is_alphabetic() {
-        Some(i)
-    } else {
-        None
-    }).collect::<Vec<_>>();
-    for cmd in  cmd_indices.windows(2).map(|w| &path[w[0]..w[1]]) {
+    let cmd_indices = svg_path
+        .chars()
+        .enumerate()
+        .filter_map(|(i, c)| if c.is_alphabetic() { Some(i) } else { None })
+        .collect::<Vec<_>>();
+    for cmd in cmd_indices.windows(2).map(|w| &svg_path[w[0]..w[1]]) {
         formatted += cmd;
         formatted += "\n";
     }
@@ -141,6 +196,16 @@ fn save_failure(icon_name: &str, side: &str, content: &str, nth: usize) {
 
     let path = format!("/tmp/failure.{icon_name}.{side}.{nth}.svg");
     fs::write(&path, formatted).unwrap_or_else(|e| panic!("Unable to write {path}: {e}"));
+
+    let path = format!("/tmp/failure.{icon_name}.{side}.{nth}.segments");
+    let mut segments = String::new();
+    for subpath in subpaths(icon_name, &svg_path) {
+        for seg in subpath.segments() {
+            segments += format!("{seg:?}\n").as_str();
+        }
+        segments += "\n";
+    }
+    fs::write(&path, segments).unwrap_or_else(|e| panic!("Unable to write {path}: {e}"));
 }
 
 #[derive(Parser, Debug)]
@@ -261,7 +326,7 @@ fn main() -> ExitCode {
                 let [left_svg, right_svg] = svgs.as_slice() else {
                     unreachable!("??");
                 };
-                if left_svg != right_svg {
+                if !equivalent_paths(icon.names[0].as_str(), left_svg, right_svg) {
                     save_failure(icon.names[0].as_str(), "left", &left_svg, bad_locs.len());
                     save_failure(icon.names[0].as_str(), "right", &right_svg, bad_locs.len());
 
