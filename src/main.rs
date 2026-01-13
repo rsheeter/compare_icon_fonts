@@ -1,5 +1,6 @@
 use std::{collections::HashSet, fs, process::ExitCode};
 
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag, instance::Location, raw::TableProvider};
 use sleipnir::{
     iconid::{Icon, Icons},
@@ -48,13 +49,14 @@ struct Axis {
     max: i32,
 }
 
-fn stops(min: i32, max: i32, step: i32) -> Vec<i32> {
+fn stops(min: i32, default: i32, max: i32, step: i32) -> Vec<i32> {
     let mut stops = Vec::new();
     let mut curr = min;
     while curr <= max {
         stops.push(curr);
         curr += step
     }
+    stops.push(default);
     stops.push(max);
     stops
 }
@@ -62,11 +64,20 @@ fn stops(min: i32, max: i32, step: i32) -> Vec<i32> {
 impl Axis {
     fn stops(&self) -> Vec<(Tag, i32)> {
         const FILL_AXIS: Tag = Tag::new(b"FILL");
+        const GRADE_AXIS: Tag = Tag::new(b"GRAD");
+        const ROUND_AXIS: Tag = Tag::new(b"ROND");
+        const OPSZ_AXIS: Tag = Tag::new(b"opsz");
+        const WGHT_AXIS: Tag = Tag::new(b"wght");
 
         let mut values = match self.tag {
-            FILL_AXIS => stops(self.min, self.max, 1),
-            _ => vec![self.min, self.default, self.max],
+            FILL_AXIS => stops(self.min, self.default, self.max, 1),
+            GRADE_AXIS => stops(self.min, self.default, self.max, 25),
+            ROUND_AXIS => stops(self.min, self.default, self.max, 50),
+            OPSZ_AXIS => stops(self.min, self.default, self.max, 16),
+            WGHT_AXIS => stops(self.min, self.default, self.max, 200),
+            _ => panic!("What is {}?!", self.tag),
         };
+        values.sort();
         values.dedup();
         values.into_iter().map(|v| (self.tag.clone(), v)).collect()
     }
@@ -179,49 +190,62 @@ fn main() -> ExitCode {
     errs += left_icons.print_only("only_left", &right_icons);
     errs += right_icons.print_only("only_right", &left_icons);
 
-    for icon in test_icons {
-        let mut bad_locs = Vec::new();
-        let mut good_locs = Vec::new();
-        for loc in test_locs.iter() {
-            let mut pngs = Vec::new();
-            for raw_font in raws.iter() {
-                pngs.push(
-                    text2png(
+    errs += test_icons
+        .par_iter()
+        .map(|icon| {
+            let mut bad_locs = Vec::new();
+            let mut good_locs = Vec::new();
+            for loc in test_locs.iter() {
+                let mut pngs = Vec::new();
+                for raw_font in raws.iter() {
+                    pngs.push(
+                        text2png(
+                            icon.names[0].as_str(),
+                            64.0,
+                            1.0,
+                            raw_font,
+                            Color::BLACK,
+                            Color::WHITE,
+                            (*loc).into(),
+                        )
+                        .unwrap_or_else(|e| panic!("Unable to draw {icon:?} at {loc:?}: {e}")),
+                    );
+                }
+                let [left_png, right_png] = pngs.as_slice() else {
+                    unreachable!("Huh?");
+                };
+                if left_png != right_png {
+                    save_png(
                         icon.names[0].as_str(),
-                        64.0,
-                        1.0,
-                        raw_font,
-                        Color::BLACK,
-                        Color::WHITE,
-                        (*loc).into(),
-                    )
-                    .unwrap_or_else(|e| panic!("Unable to draw {icon:?} at {loc:?}: {e}")),
+                        "fail.left",
+                        &left_png,
+                        bad_locs.len(),
+                    );
+                    save_png(
+                        icon.names[0].as_str(),
+                        "fail.right",
+                        &right_png,
+                        bad_locs.len(),
+                    );
+                    bad_locs.push(loc);
+                } else {
+                    //save_png(icon.names[0].as_str(), "pass", &left_png, good_locs.len());
+                    good_locs.push(loc);
+                }
+            }
+            if !bad_locs.is_empty() {
+                println!(
+                    "{} fails at {}/{} locations",
+                    icon.names[0],
+                    bad_locs.len(),
+                    test_locs.len()
                 );
-            }
-            let [left_png, right_png] = pngs.as_slice() else {
-                unreachable!("Huh?");
-            };
-            if left_png != right_png {
-                save_png(icon.names[0].as_str(), "fail.left", &left_png, bad_locs.len());
-                save_png(icon.names[0].as_str(), "fail.right", &right_png, bad_locs.len());
-                bad_locs.push(loc);
             } else {
-                save_png(icon.names[0].as_str(), "pass", &left_png, good_locs.len());
-                good_locs.push(loc);
+                println!("{} passes", icon.names[0]);
             }
-        }
-        errs += bad_locs.len();
-        if !bad_locs.is_empty() {
-            println!(
-                "{} fails at {}/{} locations",
-                icon.names[0],
-                bad_locs.len(),
-                test_locs.len()
-            );
-        } else {
-            println!("{} passes", icon.names[0]);
-        }
-    }
+            bad_locs.len()
+        })
+        .sum::<usize>();
 
     if errs == 0 {
         ExitCode::SUCCESS
