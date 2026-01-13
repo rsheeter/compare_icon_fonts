@@ -2,10 +2,7 @@ use std::{collections::HashSet, fs, process::ExitCode};
 
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag, instance::Location, raw::TableProvider};
 use sleipnir::{
-    draw_glyph::DrawOptions,
-    icon2svg::draw_icon,
-    iconid::{Icon, IconIdentifier, Icons},
-    pathstyle::SvgPathStyle,
+    iconid::{Icon, Icons},
     text2png::text2png,
 };
 use tiny_skia::Color;
@@ -103,13 +100,8 @@ fn constellation(font: &FontRef<'_>) -> HashSet<Location> {
         .collect()
 }
 
-fn save_failure(icon_name: &str, side: &str, content: &str, nth: usize) {
-    let path = format!("/tmp/failure.{icon_name}.{side}.{nth}.svg");
-    fs::write(&path, content).unwrap_or_else(|e| panic!("Unable to write {path}: {e}"));
-}
-
-fn save_png_failure(icon_name: &str, side: &str, content: &[u8], nth: usize) {
-    let path = format!("/tmp/failure.{icon_name}.{side}.{nth}.png");
+fn save_png(icon_name: &str, part: &str, content: &[u8], nth: usize) {
+    let path = format!("/tmp/compare.{icon_name}.{part}.{nth}.png");
     fs::write(&path, content).unwrap_or_else(|e| panic!("Unable to write {path}: {e}"));
 }
 
@@ -189,29 +181,8 @@ fn main() -> ExitCode {
 
     for icon in test_icons {
         let mut bad_locs = Vec::new();
+        let mut good_locs = Vec::new();
         for loc in test_locs.iter() {
-            // let draw_opts = DrawOptions::new(
-            //     IconIdentifier::Name(icon.names[0].as_str().into()),
-            //     upem.into(),
-            //     (*loc).into(),
-            //     SvgPathStyle::Unchanged(0),
-            // );
-            // let mut svgs = Vec::new();
-            // for font_ref in refs.iter() {
-            //     svgs.push(
-            //         draw_icon(font_ref, &draw_opts)
-            //             .unwrap_or_else(|e| panic!("Unable to draw {icon:?} at {loc:?}: {e}")),
-            //     );
-            // }
-            // let [left_svg, right_svg] = svgs.as_slice() else {
-            //     unreachable!("??");
-            // };
-            // if left_svg != right_svg {
-            //     save_failure(icon.names[0].as_str(), "left", &left_svg, bad_locs.len());
-            //     save_failure(icon.names[0].as_str(), "right", &right_svg, bad_locs.len());
-
-            //     bad_locs.push(loc);
-            // }
             let mut pngs = Vec::new();
             for raw_font in raws.iter() {
                 pngs.push(
@@ -222,6 +193,7 @@ fn main() -> ExitCode {
                         raw_font,
                         Color::BLACK,
                         Color::WHITE,
+                        (*loc).into(),
                     )
                     .unwrap_or_else(|e| panic!("Unable to draw {icon:?} at {loc:?}: {e}")),
                 );
@@ -230,9 +202,12 @@ fn main() -> ExitCode {
                 unreachable!("Huh?");
             };
             if left_png != right_png {
-                save_png_failure(icon.names[0].as_str(), "left", &left_png, bad_locs.len());
-                save_png_failure(icon.names[0].as_str(), "right", &right_png, bad_locs.len());
+                save_png(icon.names[0].as_str(), "fail.left", &left_png, bad_locs.len());
+                save_png(icon.names[0].as_str(), "fail.right", &right_png, bad_locs.len());
                 bad_locs.push(loc);
+            } else {
+                save_png(icon.names[0].as_str(), "pass", &left_png, good_locs.len());
+                good_locs.push(loc);
             }
         }
         errs += bad_locs.len();
